@@ -3,13 +3,15 @@
 FaceChain Evidence is a command-line pipeline for the HH Goa 2026 face identification and
 blockchain verification challenge. It detects and encodes a face, performs a genuine Google Lens
 search, locally confirms that a face in the discovered social-media image matches the input, and
-anchors a compact evidence record on Ethereum.
+resolves associated social profiles through Google's Knowledge Graph before anchoring a compact
+evidence record on Ethereum.
 
 ```text
 input image
     -> YuNet detection + SFace encoding
     -> SerpApi local-image upload + live Google Lens search
     -> social-domain filtering + SFace candidate confirmation
+    -> Lens entity + Knowledge Graph social-profile lookup
     -> canonical evidence hashes
     -> Ethereum transaction
     -> independent read-back and verification
@@ -28,9 +30,11 @@ Each successful run writes a versioned JSON envelope into an Ethereum transactio
 - SHA-256 of canonical discovery metadata
 
 The metadata includes the search provider/result ID, title, source, image URL, search rank, model
-names, and face-similarity score. The generated evidence bundle contains the transaction hash and
-block number. Verification fetches the transaction, decodes its calldata, re-hashes the off-chain
-image and metadata, and checks that all values agree.
+names, face-similarity score, Lens entity, and associated social profiles. Knowledge Graph profiles
+are marked `knowledge_graph`; profile-shaped organic results are marked `search_result` so the two
+confidence levels are never conflated. The generated evidence bundle contains the transaction hash
+and block number. Verification fetches the transaction, decodes its calldata, re-hashes the
+off-chain image and metadata, and checks that all values agree.
 
 ## Quick start
 
@@ -78,6 +82,7 @@ A successful run saves:
 - `evidence.json` — canonical metadata, hashes, chain receipt, and verification result
 - `matched-content.*` — off-chain bytes whose hash was anchored
 - `search-response.json` — sanitized live provider response (no API key)
+- `profile-search-response.json` — sanitized entity/profile lookup evidence
 - `candidate-diagnostics.json` — rejected candidates and reasons
 
 Only sanitized metadata/receipt files should be copied into a public demo folder. Do not commit the
@@ -123,6 +128,8 @@ on local Ethereum and Sepolia.
 - Public URLs and timestamps are public personal data when placed on a public chain. Run this only
   with informed consent and do not use it for surveillance, access control, or consequential
   identity decisions.
+- A Knowledge Graph association is stronger than a generic search result but is still third-party
+  metadata, not proof that an account is currently controlled by the identified person.
 
 ## Repository submission
 

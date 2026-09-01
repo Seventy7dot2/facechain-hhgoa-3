@@ -58,6 +58,21 @@ class FakeSearch:
             return b"winning-image", "image/jpeg"
         return b"wrong-image", "image/jpeg"
 
+    def discover_social_profiles(self, _payload):
+        from facechain.models import SocialProfile
+
+        identity = {
+            "name": "Test Person",
+            "kgmid": "/m/test",
+            "source": "google_lens_related_content",
+        }
+        profiles = [
+            SocialProfile(
+                "instagram", "@testperson", "https://instagram.com/testperson", "knowledge_graph"
+            )
+        ]
+        return identity, profiles, {"knowledge_graph": {"title": "Test Person"}}
+
 
 class FakeChain:
     def __init__(self, **_: object) -> None:
@@ -97,6 +112,8 @@ def test_pipeline_selects_confirmed_face_and_keeps_biometrics_off_chain(
     assert bundle["verification"]["on_chain_record_matches"] is True
     assert bundle["privacy"]["image_stored_on_chain"] is False
     assert bundle["input"]["embedding_retained"] is False
+    assert bundle["identity"]["name"] == "Test Person"
+    assert bundle["social_profiles"][0]["handle"] == "@testperson"
     assert "winning-image" not in json.dumps(bundle)
     assert set(bundle["chain_record"]) == {
         "schema",

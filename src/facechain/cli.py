@@ -93,6 +93,8 @@ def main(argv: list[str] | None = None) -> None:
                 "transaction_hash": bundle["blockchain"]["transaction_hash"],
                 "block_number": bundle["blockchain"]["block_number"],
                 "explorer_url": bundle["blockchain"]["explorer_url"],
+                "identity": bundle["identity"],
+                "social_profiles": bundle["social_profiles"],
                 "evidence": str(evidence_path),
             }
             print(json.dumps(summary, indent=2))

@@ -44,6 +44,14 @@ def run_pipeline(
     with SerpApiLens(api_key) as search:
         candidates, raw_search = search.search(search_crop)
         _write_json(run_dir / "search-response.json", raw_search)
+        try:
+            identity, social_profiles, profile_response = search.discover_social_profiles(
+                raw_search
+            )
+        except SearchError as exc:
+            identity, social_profiles = None, []
+            profile_response = {"error": str(exc)}
+        _write_json(run_dir / "profile-search-response.json", profile_response)
         if not candidates:
             raise NoMatchError("Google Lens returned no supported social-media results")
 
@@ -106,6 +114,8 @@ def run_pipeline(
             "acceptance_threshold": similarity_threshold,
             "candidate_faces": match.detected_faces,
         },
+        "identity": identity,
+        "social_profiles": [profile.to_dict() for profile in social_profiles],
     }
     metadata_sha256 = sha256_bytes(canonical_json(metadata))
     chain_record = make_chain_record(
@@ -143,6 +153,8 @@ def run_pipeline(
         },
         "metadata": metadata,
         "metadata_sha256": metadata_sha256,
+        "identity": identity,
+        "social_profiles": [profile.to_dict() for profile in social_profiles],
         "chain_record": chain_record,
         "blockchain": receipt.to_dict(),
         "verification": {

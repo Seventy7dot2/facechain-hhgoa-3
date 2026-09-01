@@ -28,6 +28,17 @@ class ConfirmedMatch:
 
 
 @dataclass(frozen=True, slots=True)
+class SocialProfile:
+    platform: str
+    handle: str
+    profile_url: str
+    confidence: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ChainReceipt:
     backend: str
     chain_id: int
