@@ -31,10 +31,14 @@ Each successful run writes a versioned JSON envelope into an Ethereum transactio
 
 The metadata includes the search provider/result ID, title, source, image URL, search rank, model
 names, face-similarity score, Lens entity, and associated social profiles. Knowledge Graph profiles
-are marked `knowledge_graph`; profile-shaped organic results are marked `search_result` so the two
-confidence levels are never conflated. The generated evidence bundle contains the transaction hash
-and block number. Verification fetches the transaction, decodes its calldata, re-hashes the
-off-chain image and metadata, and checks that all values agree.
+are marked `knowledge_graph`; profile-shaped organic results are marked `search_result`, and direct
+profile URLs returned by Lens are marked `lens_result`, so the confidence levels are never
+conflated. If Lens omits an entity/KGMID, the pipeline infers a display name only when at least two
+high-confidence result titles agree and retains only profile pages directly associated by Lens. It
+deliberately skips a generic name-based social search, which can return accounts belonging to other
+people with the same name. The generated evidence bundle contains the transaction hash and block
+number. Verification fetches the transaction, decodes its calldata, re-hashes the off-chain image
+and metadata, and checks that all values agree.
 
 ## Quick start
 

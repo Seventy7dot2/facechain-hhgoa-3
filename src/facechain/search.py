@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from collections import Counter
 from collections.abc import Iterable
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -12,6 +14,7 @@ from facechain.models import SearchCandidate, SocialProfile
 SOCIAL_HOSTS = (
     "bsky.app",
     "facebook.com",
+    "github.com",
     "instagram.com",
     "linkedin.com",
     "medium.com",
@@ -100,8 +103,23 @@ class SerpApiLens:
     ) -> tuple[dict[str, str] | None, list[SocialProfile], dict[str, Any] | None]:
         """Resolve the Lens entity and its associated Knowledge Graph profiles."""
         identity = extract_identity_hint(lens_payload)
+        lens_profiles = extract_lens_profiles(
+            lens_payload, identity_name=identity["name"] if identity else None
+        )
         if identity is None:
-            return None, [], None
+            return None, lens_profiles, None
+        if not identity.get("kgmid"):
+            return (
+                identity,
+                lens_profiles,
+                {
+                    "skipped": True,
+                    "reason": (
+                        "No Knowledge Graph ID; generic name-based profile search "
+                        "is disabled to prevent same-name false positives."
+                    ),
+                },
+            )
         params = {
             "api_key": self._api_key,
             "engine": "google",
@@ -114,13 +132,16 @@ class SerpApiLens:
         try:
             response = self._client.get(self.SEARCH_URL, params=params)
         except httpx.HTTPError as exc:
-            raise SearchError(f"SerpApi entity profile search failed: {exc}") from exc
-        payload = self._json_or_error(response, "entity profile search")
+            return identity, lens_profiles, {"error": f"entity profile search failed: {exc}"}
+        try:
+            payload = self._json_or_error(response, "entity profile search")
+        except SearchError as exc:
+            return identity, lens_profiles, {"error": str(exc)}
         knowledge_graph = payload.get("knowledge_graph")
         if isinstance(knowledge_graph, dict):
             identity["name"] = str(knowledge_graph.get("title") or identity["name"])
             identity["kgmid"] = str(knowledge_graph.get("kgmid") or identity.get("kgmid") or "")
-        profiles = extract_social_profiles(payload)
+        profiles = _merge_profiles(extract_social_profiles(payload), lens_profiles)
         return identity, profiles, sanitize_profile_payload(payload)
 
     @staticmethod
@@ -188,19 +209,62 @@ def sanitize_search_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def extract_identity_hint(payload: dict[str, Any]) -> dict[str, str] | None:
     related = payload.get("related_content")
-    if not isinstance(related, list):
+    if isinstance(related, list):
+        for row in related:
+            if not isinstance(row, dict) or not row.get("query"):
+                continue
+            link = str(row.get("serpapi_link") or row.get("link") or "")
+            kgmid = parse_qs(urlparse(link).query).get("kgmid", [""])[0]
+            return {
+                "name": str(row["query"]),
+                "kgmid": kgmid,
+                "source": "google_lens_related_content",
+            }
+
+    names: list[str] = []
+    visual_matches = payload.get("visual_matches")
+    if not isinstance(visual_matches, list):
         return None
-    for row in related:
-        if not isinstance(row, dict) or not row.get("query"):
+    for row in visual_matches[:10]:
+        if not isinstance(row, dict):
             continue
-        link = str(row.get("serpapi_link") or row.get("link") or "")
-        kgmid = parse_qs(urlparse(link).query).get("kgmid", [""])[0]
-        return {
-            "name": str(row["query"]),
-            "kgmid": kgmid,
-            "source": "google_lens_related_content",
-        }
+        name = _identity_name_from_match(row)
+        if name:
+            names.append(name)
+    counts = Counter(name.casefold() for name in names)
+    for name in names:
+        if counts[name.casefold()] >= 2:
+            return {
+                "name": name,
+                "kgmid": "",
+                "source": "google_lens_visual_consensus",
+            }
     return None
+
+
+def extract_lens_profiles(
+    payload: dict[str, Any], *, identity_name: str | None
+) -> list[SocialProfile]:
+    if not identity_name:
+        return []
+    rows = payload.get("visual_matches", [])
+    if not isinstance(rows, list):
+        return []
+    profiles: list[SocialProfile] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        result_name = _identity_name_from_match(row)
+        if result_name is None or result_name.casefold() != identity_name.casefold():
+            continue
+        profile = _social_profile(
+            str(row.get("source") or row.get("title") or ""),
+            str(row.get("link") or ""),
+            confidence="lens_result",
+        )
+        if profile:
+            profiles.append(profile)
+    return _merge_profiles(profiles)
 
 
 def extract_social_profiles(payload: dict[str, Any]) -> list[SocialProfile]:
@@ -288,7 +352,19 @@ def _social_profile(label: str, raw_url: str, *, confidence: str) -> SocialProfi
         return None
 
     platform = _platform_name(host, label)
-    blocked_first = {"explore", "home", "i", "p", "pin", "reel", "search", "stories", "watch"}
+    blocked_first = {
+        "explore",
+        "feed",
+        "home",
+        "i",
+        "p",
+        "pin",
+        "pulse",
+        "reel",
+        "search",
+        "stories",
+        "watch",
+    }
     blocked_later = {"posts", "reel", "status", "videos", "watch"}
     if parts and (
         parts[0].lower() in blocked_first
@@ -306,6 +382,8 @@ def _social_profile(label: str, raw_url: str, *, confidence: str) -> SocialProfi
         return None
     elif platform == "linkedin" and parts[0].lower() in {"company", "in", "pub"}:
         if len(parts) < 2:
+            return None
+        if parts[0].lower() == "pub" and parts[1].lower() == "dir":
             return None
         handle = parts[1]
     else:
@@ -327,9 +405,56 @@ def _repair_profile_url(url: str) -> str:
 def _platform_name(host: str, label: str) -> str:
     if host.endswith(("twitter.com", "x.com")):
         return "x"
-    for name in ("facebook", "instagram", "linkedin", "medium", "pinterest", "threads", "tiktok"):
+    for name in (
+        "facebook",
+        "github",
+        "instagram",
+        "linkedin",
+        "medium",
+        "pinterest",
+        "threads",
+        "tiktok",
+    ):
         if host.endswith(name + ".com"):
             return name
     if host.endswith(("youtube.com", "youtu.be")):
         return "youtube"
     return label.strip().lower() or host
+
+
+def _identity_name_from_match(row: dict[str, Any]) -> str | None:
+    title = re.sub(r"\s+", " ", str(row.get("title") or "")).strip()
+    url = str(row.get("link") or "")
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    path = [part for part in urlparse(url).path.split("/") if part]
+    candidate: str | None = None
+
+    if host.endswith("github.com"):
+        match = re.search(r"\(([^()]+)\)\s*[·|-]\s*GitHub", title, flags=re.IGNORECASE)
+        candidate = match.group(1) if match else None
+    elif host.endswith("linkedin.com") and len(path) >= 2 and path[-2].lower() == "in":
+        candidate = re.split(r"\s+-\s+|\s+\|\s+LinkedIn", title, maxsplit=1)[0]
+    elif re.search(r"\s[-|·]\sPortfolio$", title, flags=re.IGNORECASE):
+        candidate = re.split(r"\s[-|·]\sPortfolio$", title, maxsplit=1)[0]
+
+    if candidate is None:
+        return None
+    candidate = candidate.strip(" -|·")
+    words = candidate.split()
+    if not (2 <= len(words) <= 6) or len(candidate) > 80:
+        return None
+    if not all(any(character.isalpha() for character in word) for word in words):
+        return None
+    return candidate
+
+
+def _merge_profiles(*groups: list[SocialProfile]) -> list[SocialProfile]:
+    merged: list[SocialProfile] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups:
+        for profile in group:
+            key = (profile.platform, profile.handle.casefold())
+            if key not in seen:
+                seen.add(key)
+                merged.append(profile)
+    return merged

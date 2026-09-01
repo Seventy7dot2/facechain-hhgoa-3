@@ -1,6 +1,8 @@
 from facechain.search import (
+    SerpApiLens,
     _parse_social_candidates,
     extract_identity_hint,
+    extract_lens_profiles,
     extract_social_profiles,
     is_social_url,
     sanitize_search_payload,
@@ -10,6 +12,7 @@ from facechain.search import (
 def test_social_domain_filter_uses_hostname_boundaries() -> None:
     assert is_social_url("https://www.instagram.com/p/abc")
     assert is_social_url("https://mobile.x.com/user/status/1")
+    assert is_social_url("https://github.com/Seventy7dot2")
     assert not is_social_url("https://x.com.attacker.example/post")
     assert not is_social_url("https://example.com/x.com/post")
 
@@ -103,3 +106,86 @@ def test_extracts_entity_and_associated_social_profiles() -> None:
         ("medium", "barackobama", "search_result"),
     ]
     assert profiles[1].profile_url == "https://instagram.com/barackobama/?hl=en"
+
+
+def test_falls_back_to_consensus_identity_and_matching_lens_profiles() -> None:
+    payload = {
+        "related_content": None,
+        "visual_matches": [
+            {
+                "position": 1,
+                "title": "Prasad Patra - Portfolio",
+                "link": "https://prasadpatra.dev/",
+                "source": "prasadpatra.dev",
+            },
+            {
+                "position": 2,
+                "title": "Seventy7dot2 (Prasad Patra) · GitHub",
+                "link": "https://github.com/Seventy7dot2",
+                "source": "GitHub",
+            },
+            {
+                "position": 3,
+                "title": "From a Cab Ride to Code Deployments—My Story with Scogo",
+                "link": "https://linkedin.com/pulse/story-prasad-patra",
+                "source": "LinkedIn",
+            },
+            {
+                "position": 4,
+                "title": "Prasad Patra - AI Product Engineer | LinkedIn",
+                "link": "https://in.linkedin.com/in/prasadpatra",
+                "source": "LinkedIn",
+            },
+            {
+                "position": 5,
+                "title": "Different Person - Student | LinkedIn",
+                "link": "https://linkedin.com/in/different-person",
+                "source": "LinkedIn",
+            },
+        ],
+    }
+    identity = extract_identity_hint(payload)
+    assert identity == {
+        "name": "Prasad Patra",
+        "kgmid": "",
+        "source": "google_lens_visual_consensus",
+    }
+    profiles = extract_lens_profiles(payload, identity_name=identity["name"])
+    assert [(profile.platform, profile.handle) for profile in profiles] == [
+        ("github", "Seventy7dot2"),
+        ("linkedin", "prasadpatra"),
+    ]
+
+
+def test_non_kg_identity_skips_ambiguous_name_search() -> None:
+    payload = {
+        "visual_matches": [
+            {
+                "title": "Seventy7dot2 (Prasad Patra) · GitHub",
+                "link": "https://github.com/Seventy7dot2",
+                "source": "GitHub",
+            },
+            {
+                "title": "Prasad Patra - AI Product Engineer | LinkedIn",
+                "link": "https://linkedin.com/in/prasadpatra",
+                "source": "LinkedIn",
+            },
+        ]
+    }
+    service = SerpApiLens("test-key")
+
+    class NoNetworkClient:
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("a generic name search must not be requested")
+
+        def close(self):
+            pass
+
+    service._client = NoNetworkClient()  # type: ignore[assignment]
+    identity, profiles, response = service.discover_social_profiles(payload)
+    assert identity and identity["name"] == "Prasad Patra"
+    assert [(profile.platform, profile.handle) for profile in profiles] == [
+        ("github", "Seventy7dot2"),
+        ("linkedin", "prasadpatra"),
+    ]
+    assert response and response["skipped"] is True
