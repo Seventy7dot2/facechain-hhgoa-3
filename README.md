@@ -17,8 +17,8 @@ input image
     -> independent read-back and verification
 ```
 
-No website is required or included. Raw face embeddings are held only in memory. Social images are
-never stored on-chain.
+The repository includes a responsive HH Goa-themed web interface as well as the CLI. Raw face
+embeddings are held only in memory. Social images are never stored on-chain.
 
 ## What goes on-chain
 
@@ -54,6 +54,27 @@ uv run facechain download-models
 uv run facechain inspect-face /path/to/one-face.jpg
 uv run facechain run /path/to/one-face.jpg
 ```
+
+### Web interface
+
+Start the API and frontend in separate terminals:
+
+```bash
+# Terminal 1 — API
+uv run facechain serve --host 127.0.0.1 --port 8000
+
+# Terminal 2 — frontend
+cd frontend
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`, select a clear JPG, PNG, or WebP image, confirm consent, and run the
+search. The result board shows the matched source, similarity score, profiles supported by the
+search evidence, content hash, and blockchain receipt. For a deployed frontend, set
+`NEXT_PUBLIC_FACECHAIN_API_URL` to the public HTTPS URL of the separately hosted Python API before
+building.
 
 The default `local` blockchain is Web3.py's in-process Ethereum tester. It mines a real Ethereum
 transaction, returns a transaction and block hash, then reads the record back from the chain and

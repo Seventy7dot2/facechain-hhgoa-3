@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_parser.add_argument("evidence", type=Path)
     verify_parser.add_argument("--image", type=Path)
+
+    serve_parser = subparsers.add_parser("serve", help="Serve the local HTTP API for the frontend")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.add_argument("--reload", action="store_true")
     return parser
 
 
@@ -98,6 +103,12 @@ def main(argv: list[str] | None = None) -> None:
                 "evidence": str(evidence_path),
             }
             print(json.dumps(summary, indent=2))
+            return
+
+        if args.command == "serve":
+            import uvicorn
+
+            uvicorn.run("facechain.api:app", host=args.host, port=args.port, reload=args.reload)
             return
 
         result = verify_sepolia_bundle(args.evidence, image_path=args.image)

@@ -11,3 +11,4 @@ models/*.onnx
 # Local consented demo input; never publish biometric source images by default.
 image.jpeg
 image.webp
+sumit.jpeg

@@ -11,10 +11,13 @@ requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "HH Goa 2026 Team" }]
 dependencies = [
+  "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "numpy>=2.0,<3",
   "opencv-contrib-python-headless>=4.10,<6",
   "python-dotenv>=1.0,<2",
+  "python-multipart>=0.0.20,<1",
+  "uvicorn>=0.35,<1",
   "web3[tester]>=7.8,<8",
 ]
 
