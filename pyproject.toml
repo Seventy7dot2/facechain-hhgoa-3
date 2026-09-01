@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "facechain-evidence"
+version = "0.1.0"
+description = "Face-to-social discovery with tamper-evident Ethereum verification"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "HH Goa 2026 Team" }]
+dependencies = [
+  "httpx>=0.28,<1",
+  "numpy>=2.0,<3",
+  "opencv-contrib-python-headless>=4.10,<6",
+  "python-dotenv>=1.0,<2",
+  "web3[tester]>=7.8,<8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+facechain = "facechain.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/facechain"]
+
+[tool.pytest.ini_options]
+addopts = "-q --disable-warnings"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
