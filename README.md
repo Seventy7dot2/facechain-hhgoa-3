@@ -76,6 +76,12 @@ search evidence, content hash, and blockchain receipt. For a deployed frontend, 
 `NEXT_PUBLIC_FACECHAIN_API_URL` to the public HTTPS URL of the separately hosted Python API before
 building.
 
+The frontend requests `text/event-stream` from the original `POST /api/runs` endpoint. The same
+endpoint keeps its JSON response for ordinary API clients. Stream events are emitted around the
+real YuNet, SFace, SerpApi/Lens, profile-resolution, candidate-confirmation, hashing, publication,
+and read-back operations; no presentation timer invents progress. A deployed API or reverse proxy
+must keep SSE responses unbuffered and allow enough time for live search and transaction mining.
+
 The default `local` blockchain is Web3.py's in-process Ethereum tester. It mines a real Ethereum
 transaction, returns a transaction and block hash, then reads the record back from the chain and
 re-verifies it before reporting success. Run artifacts are written under `artifacts/<run-id>/` and

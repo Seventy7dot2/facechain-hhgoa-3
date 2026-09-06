@@ -1,12 +1,31 @@
 "use client";
 
-import { ChangeEvent, DragEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { consumeEvents } from "./stream.mjs";
 
 type SocialProfile = {
   platform: string;
   handle: string;
   profile_url: string;
   confidence: "knowledge_graph" | "lens_result" | "search_result";
+};
+
+type Candidate = {
+  rank: number;
+  title: string;
+  source: string;
+  source_url: string;
+  image_url: string;
+  thumbnail_url?: string;
+  exact_match: boolean;
+};
+
+type Blockchain = {
+  backend: string;
+  chain_id: number;
+  transaction_hash: string;
+  block_number: number;
+  explorer_url: string | null;
 };
 
 type PipelineResult = {
@@ -19,369 +38,286 @@ type PipelineResult = {
   content_sha256: string;
   identity: { name: string; kgmid: string; source: string } | null;
   social_profiles: SocialProfile[];
-  blockchain: {
-    backend: string;
-    chain_id: number;
-    transaction_hash: string;
-    block_number: number;
-    sender: string;
-    explorer_url: string | null;
-  };
+  blockchain: Blockchain;
   evidence_path: string;
 };
 
+type FeedData = {
+  preview?: string;
+  detected_faces?: number;
+  selected_face?: { x: number; y: number; width: number; height: number };
+  image_width?: number;
+  image_height?: number;
+  bytes?: number;
+  candidates?: Candidate[];
+  candidate?: Candidate;
+  cosine_similarity?: number;
+  accepted?: boolean;
+  identity?: { name: string; kgmid: string; source: string } | null;
+  profiles?: SocialProfile[];
+  match?: Candidate & { cosine_similarity: number; detected_faces: number; preview: string };
+  chain_record?: Record<string, string>;
+  receipt?: Blockchain;
+  checks?: Record<string, boolean>;
+  result?: PipelineResult;
+};
+
+type Feed = {
+  id: number | string;
+  run_id?: string;
+  stage: string;
+  state: "running" | "completed" | "finished" | "failed";
+  message: string;
+  elapsed_ms?: number;
+  duration_ms?: number;
+  data: FeedData;
+};
+
 const API_URL = process.env.NEXT_PUBLIC_FACECHAIN_API_URL ?? "http://localhost:8000";
-const MAX_BYTES = 15_000_000;
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
-const STAGES = [
-  ["01", "FACE ENCODE", "YuNet detection + 128D SFace vector"],
-  ["02", "SEARCH WEB", "Genuine Google Lens reverse search"],
-  ["03", "MATCH FACE", "Candidate-by-candidate similarity check"],
-  ["04", "MAP SOCIALS", "Entity-safe profile resolution"],
-  ["05", "ANCHOR PROOF", "Ethereum write + independent read-back"],
+const STEPS = [
+  ["input", "Encode", "YuNet + SFace", "Detect the largest input face, align it, and create an in-memory SFace feature vector."],
+  ["crop", "Prepare", "Face → search crop", "Crop the detected face with context and compress the actual search upload below 500 KB."],
+  ["search", "Discover", "SerpApi → Lens", "Upload the crop to SerpApi and retrieve live Google Lens results from supported social platforms."],
+  ["profiles", "Resolve", "Entity → profiles", "Use Lens identity evidence and a Knowledge Graph ID when available to associate profile URLs."],
+  ["confirm", "Compare", "Candidate → SFace", "Download each ranked candidate and compare all detected faces against the input vector."],
+  ["evidence", "Fingerprint", "Match → SHA-256", "Hash the selected image bytes and deterministic discovery metadata independently."],
+  ["anchor", "Publish", "Record → Ethereum", "Write the compact evidence record into local Ethereum or Sepolia transaction calldata."],
+  ["verify", "Read back", "Ethereum → proof", "Read the transaction back and require exact record equality before reporting verification."],
 ] as const;
 
-function compactHash(value: string, start = 12, end = 10) {
-  if (value.length <= start + end + 3) return value;
-  return `${value.slice(0, start)}…${value.slice(-end)}`;
+function duration(milliseconds?: number) {
+  if (milliseconds === undefined) return "";
+  if (milliseconds < 0.01) return "<0.01 ms";
+  return milliseconds < 1000
+    ? `${milliseconds.toFixed(2)} ms`
+    : `${(milliseconds / 1000).toFixed(2)} s`;
 }
 
-function confidenceLabel(value: SocialProfile["confidence"]) {
+function confidence(value: SocialProfile["confidence"]) {
   if (value === "knowledge_graph") return "KNOWLEDGE GRAPH";
-  if (value === "lens_result") return "LENS CONFIRMED";
-  return "SEARCH RESULT";
+  if (value === "lens_result") return "DIRECT LENS RESULT";
+  return "ENTITY SEARCH RESULT";
 }
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const [consent, setConsent] = useState(false);
-  const [chain, setChain] = useState<"local" | "sepolia">("local");
+  const [original, setOriginal] = useState("");
+  const [events, setEvents] = useState<Feed[]>([]);
+  const [selected, setSelected] = useState("input");
+  const [follow, setFollow] = useState(true);
   const [running, setRunning] = useState(false);
-  const [stage, setStage] = useState(-1);
+  const [error, setError] = useState("");
+  const [chain, setChain] = useState<"local" | "sepolia">("local");
+  const [consent, setConsent] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [online, setOnline] = useState<boolean | null>(null);
   const [result, setResult] = useState<PipelineResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [apiReady, setApiReady] = useState<boolean | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
+    const timer = window.setTimeout(() => controller.abort(), 3000);
     fetch(`${API_URL}/api/health`, { signal: controller.signal })
-      .then((response) => setApiReady(response.ok))
-      .catch(() => setApiReady(false))
-      .finally(() => clearTimeout(timeout));
-    return () => controller.abort();
+      .then((response) => setOnline(response.ok))
+      .catch(() => setOnline(false))
+      .finally(() => window.clearTimeout(timer));
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+      abortRef.current?.abort();
+    };
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (preview) URL.revokeObjectURL(preview);
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [preview]);
+  useEffect(() => () => {
+    if (original) URL.revokeObjectURL(original);
+  }, [original]);
 
-  function chooseFile(next: File | null) {
-    setError(null);
-    setResult(null);
-    if (!next) return;
-    if (!ACCEPTED_TYPES.includes(next.type)) {
-      setError("Use a JPG, PNG, or WebP image.");
+  function chooseFile(next?: File) {
+    if (!next || running) return;
+    if (!ACCEPTED_TYPES.includes(next.type) || !next.size || next.size > 15_000_000) {
+      setError("Choose a non-empty JPG, PNG, or WebP under 15 MB.");
       return;
     }
-    if (next.size > MAX_BYTES) {
-      setError("Keep the image under 15 MB.");
-      return;
-    }
-    if (preview) URL.revokeObjectURL(preview);
+    if (original) URL.revokeObjectURL(original);
     setFile(next);
-    setPreview(URL.createObjectURL(next));
+    setOriginal(URL.createObjectURL(next));
+    setEvents([]);
+    setResult(null);
+    setError("");
+    setSelected("input");
+    setFollow(true);
   }
 
-  function handleInput(event: ChangeEvent<HTMLInputElement>) {
-    chooseFile(event.target.files?.[0] ?? null);
-  }
-
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setDragging(false);
-    chooseFile(event.dataTransfer.files?.[0] ?? null);
-  }
-
-  async function runPipeline(event: FormEvent) {
-    event.preventDefault();
+  async function runPipeline() {
     if (!file || !consent || running) return;
     setRunning(true);
+    setEvents([]);
     setResult(null);
-    setError(null);
-    setStage(0);
-    let currentStage = 0;
-    timerRef.current = setInterval(() => {
-      currentStage = Math.min(currentStage + 1, STAGES.length - 1);
-      setStage(currentStage);
-    }, 2400);
+    setError("");
+    setFollow(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const form = new FormData();
+    form.append("image", file);
+    form.append("chain", chain);
+    let finished = false;
 
-    const body = new FormData();
-    body.append("image", file);
-    body.append("chain", chain);
     try {
-      const response = await fetch(`${API_URL}/api/runs`, { method: "POST", body });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail ?? "The verification run failed.");
-      setStage(STAGES.length);
-      setResult(payload as PipelineResult);
-      setApiReady(true);
-      window.setTimeout(() => {
-        document.getElementById("proof")?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 100);
-    } catch (requestError) {
-      const message = requestError instanceof Error ? requestError.message : "The verification run failed.";
+      const response = await fetch(`${API_URL}/api/runs`, {
+        method: "POST",
+        headers: { Accept: "text/event-stream" },
+        body: form,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.detail ?? "The discovery run failed.");
+      }
+      if (!response.body) throw new Error("Streaming is unavailable in this browser.");
+      setOnline(true);
+      await consumeEvents<Feed>(response.body, (event) => {
+        setEvents((previous) => [...previous, event]);
+        if (event.state === "failed") throw new Error(event.message);
+        if (event.state === "finished" && event.data.result) {
+          finished = true;
+          setResult(event.data.result);
+        }
+      });
+      if (!finished) throw new Error("The connection ended before verification completed.");
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "The discovery run failed.";
       setError(
         message === "Failed to fetch"
-          ? "Local engine is offline. Start it with `uv run facechain serve`, then retry."
+          ? "Cannot reach FaceChain. Start the Python API and check its allowed browser origin."
           : message,
       );
-      setStage(-1);
     } finally {
-      if (timerRef.current) clearInterval(timerRef.current);
-      timerRef.current = null;
+      abortRef.current = null;
       setRunning(false);
     }
   }
 
-  async function copyValue(key: string, value: string) {
-    await navigator.clipboard.writeText(value);
-    setCopied(key);
-    window.setTimeout(() => setCopied(null), 1400);
-  }
+  const latest = events.at(-1);
+  const activeStage = follow && latest && STEPS.some(([id]) => id === latest.stage)
+    ? latest.stage
+    : selected;
+  const stageDefinition = STEPS.find(([id]) => id === activeStage) ?? STEPS[0];
+  const current = events.filter((event) => event.stage === activeStage).at(-1);
+  const completed = (id: string) => events.findLast(
+    (event) => event.stage === id && event.state === "completed",
+  );
+  const inputEvent = completed("input")?.data;
+  const cropEvent = completed("crop")?.data;
+  const searchEvent = completed("search")?.data;
+  const profileEvent = completed("profiles")?.data;
+  const confirmationEvents = events.filter(
+    (event) => event.stage === "confirm" && event.data.candidate,
+  );
+  const confirmationEvent = confirmationEvents.at(-1)?.data;
+  const confirmedMatch = completed("confirm")?.data.match;
+  const evidenceEvent = completed("evidence")?.data;
+  const receipt = completed("anchor")?.data.receipt ?? result?.blockchain;
+  const checks = completed("verify")?.data.checks;
+  const done = STEPS.filter(([id]) => completed(id)).length;
 
-  function reset() {
-    if (preview) URL.revokeObjectURL(preview);
-    setFile(null);
-    setPreview(null);
-    setConsent(false);
-    setResult(null);
-    setError(null);
-    setStage(-1);
-    if (inputRef.current) inputRef.current.value = "";
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
+  const shownProfiles = result?.social_profiles ?? profileEvent?.profiles ?? [];
+  const shownIdentity = result?.identity ?? profileEvent?.identity;
 
   return (
-    <main>
-      <section className="hero" aria-labelledby="hero-title">
-        <div className="sun" aria-hidden="true"><span /></div>
-        <div className="topographic-lines" aria-hidden="true" />
-        <header className="nav shell">
-          <a className="wordmark" href="#top" aria-label="FaceChain home">
-            <span className="mark">FC</span>
-            <span>FACECHAIN</span>
-          </a>
-          <div className="nav-meta">
-            <span>HH GOA · TASK 03</span>
-            <span className={`engine-pill ${apiReady === false ? "offline" : ""}`}>
-              <i /> {apiReady === null ? "CHECKING ENGINE" : apiReady ? "ENGINE READY" : "ENGINE OFFLINE"}
-            </span>
+    <main className="lab">
+      <header className="nav shell">
+        <a className="wordmark" href="#top"><span className="mark">FC</span> FACECHAIN LIVE</a>
+        <div className="nav-meta">
+          <span>HH GOA · TASK 03</span>
+          <span className={`engine-pill ${online === false ? "offline" : ""}`}>
+            <i />{online === null ? "CONNECTING" : online ? "ENGINE ONLINE" : "ENGINE UNREACHABLE"}
+          </span>
+        </div>
+      </header>
+
+      <section className="lab-intro shell" id="top">
+        <div><p className="eyebrow">FACE DISCOVERY / LIVE ARCHITECTURE</p><h1>SEE THE SEARCH.<br /><em>PROVE THE MATCH.</em></h1></div>
+        <p>Follow the actual image through YuNet, SFace, Google Lens, profile resolution, candidate confirmation, and Ethereum verification. Every update comes from the backend.</p>
+      </section>
+
+      <section className="workbench shell">
+        <aside className="intake">
+          <span className="kicker">01 / SEARCH INPUT</span><h2>DROP THE<br />FACE.</h2>
+          <input ref={inputRef} type="file" accept={ACCEPTED_TYPES.join(",")} hidden disabled={running} onChange={(event) => chooseFile(event.target.files?.[0])} />
+          <button className={`source-drop ${dragging ? "dragging" : ""}`} disabled={running} onClick={() => inputRef.current?.click()} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files[0]); }}>
+            {original ? <Picture src={original} alt="Selected search image" /> : <span><b>＋</b>DROP AN IMAGE<br /><small>or browse your files</small></span>}
+          </button>
+          <p className="file-caption">{file ? `${file.name} · ${(file.size / 1_000_000).toFixed(2)} MB` : "JPG / PNG / WEBP · UP TO 15 MB"}</p>
+          <label className="chain-label">EVIDENCE CHAIN<select value={chain} disabled={running} onChange={(event) => setChain(event.target.value as "local" | "sepolia")}><option value="local">Local Ethereum · temporary</option><option value="sepolia">Sepolia · public testnet</option></select></label>
+          <label className="consent-row lab-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>I confirm I have consent to search this face and understand that discovered public URLs may be placed on-chain.</span></label>
+          <button className="run-button" disabled={!file || !consent || running} onClick={runPipeline}>{running ? "SEARCHING LIVE…" : "RUN FACECHAIN"}<span>↗</span></button>
+          <p className="fine">Face embeddings stay in memory. Images and embeddings are never written on-chain.</p>
+        </aside>
+
+        <div className="observatory">
+          <div className="live-heading"><span className={running ? "live-dot" : ""}>{running ? "● LIVE FROM THE PIPELINE" : result ? "✓ END-TO-END VERIFIED" : "PIPELINE OBSERVATORY"}</span><span>{done} / {STEPS.length} COMPLETE</span>{latest?.elapsed_ms !== undefined && <span>TOTAL SERVER TIME: {duration(latest.elapsed_ms)}</span>}</div>
+          <ol className="architecture pipeline-architecture" aria-label="Live FaceChain architecture">{STEPS.map(([id, title, subtitle], index) => {
+            const item = events.findLast((event) => event.stage === id);
+            const state = item?.state === "finished"
+              ? "completed"
+              : error && item?.state === "running" ? "failed" : item?.state ?? "pending";
+            const complete = completed(id);
+            return <li key={id} className={state}><button onClick={() => { setSelected(id); setFollow(false); }} aria-pressed={activeStage === id}><span className="node-index">{complete ? "✓" : String(index + 1).padStart(2, "0")}</span><b>{title}</b><small>{subtitle}</small><span className="node-state">{complete ? "completed" : state}{complete && <small>{duration(complete.duration_ms)}</small>}</span></button></li>;
+          })}</ol>
+          <div className="inspector-head"><div><span className="kicker">INSIDE THE OPERATION</span><h2>{stageDefinition[1]}</h2></div><button className="follow-button" aria-pressed={follow} onClick={() => setFollow(!follow)}>{follow ? "FOLLOWING LIVE" : "FOLLOW LIVE ↗"}</button></div>
+          <p className="operation-description">{stageDefinition[3]}</p>
+          <div className={`pixel-stage pipeline-stage ${running && current?.state === "running" ? "working" : ""}`}>
+            {activeStage === "crop" && cropEvent?.preview ? <><Picture src={cropEvent.preview} alt="Actual face crop sent to SerpApi" /><span className="image-caption">SERPAPI UPLOAD · {cropEvent.bytes?.toLocaleString()} BYTES</span></>
+              : activeStage === "search" && searchEvent?.candidates?.length ? <CandidateGallery candidates={searchEvent.candidates} />
+              : activeStage === "profiles" ? <ProfileStage identity={shownIdentity} profiles={shownProfiles} />
+              : activeStage === "confirm" && (confirmationEvent?.preview || confirmedMatch?.preview) ? <MatchStage data={confirmedMatch ?? confirmationEvent} />
+              : ["evidence", "anchor", "verify"].includes(activeStage) && evidenceEvent?.chain_record ? <ProofStage record={evidenceEvent.chain_record} receipt={receipt} checks={checks} />
+              : original ? <div className="face-preview"><Picture src={activeStage === "input" && inputEvent?.preview ? inputEvent.preview : original} alt={activeStage === "input" && inputEvent?.preview ? "Backend face detection preview" : "Uploaded input face"} /><span className="image-caption">{inputEvent ? `${inputEvent.detected_faces} FACE${inputEvent.detected_faces === 1 ? "" : "S"} · ${inputEvent.image_width} × ${inputEvent.image_height}` : "AWAITING YUNET DETECTION"}</span></div>
+              : <div className="empty-stage"><span className="empty-cross">＋</span><h3>THE PIPELINE OPENS HERE.</h3><p>Upload a consented image to begin.</p></div>}
+            {running && current?.state === "running" && <div className="processing-beam" />}
           </div>
-        </header>
-
-        <div id="top" className="hero-grid shell">
-          <div className="hero-copy">
-            <p className="eyebrow">FACE ID × SOCIAL SEARCH × ETHEREUM</p>
-            <h1 id="hero-title">
-              FIND THE FACE.<br />
-              <em>PROVE THE FIND.</em>
-            </h1>
-            <p className="lede">
-              One image in. A real matching post out. Every byte fingerprinted and anchored to an
-              Ethereum block before you call it verified.
-            </p>
-            <div className="proof-strip" aria-label="Pipeline capabilities">
-              <span><b>01</b> LOCAL FACE ENCODING</span>
-              <span><b>02</b> GENUINE WEB SEARCH</span>
-              <span><b>03</b> TAMPER-EVIDENT PROOF</span>
-            </div>
-          </div>
-
-          <form className="scan-card" onSubmit={runPipeline}>
-            <div className="card-rivet one" /><div className="card-rivet two" />
-            <div className="card-head">
-              <div>
-                <span className="kicker">START A TRACE</span>
-                <h2>DROP THE SCAN</h2>
-              </div>
-              <span className="task-chip">#03</span>
-            </div>
-
-            <div
-              className={`dropzone ${dragging ? "dragging" : ""} ${preview ? "has-image" : ""}`}
-              onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={handleDrop}
-              onClick={() => inputRef.current?.click()}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") inputRef.current?.click();
-              }}
-              aria-label="Choose a face image"
-            >
-              <input
-                ref={inputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                onChange={handleInput}
-                hidden
-              />
-              {preview ? (
-                <>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={preview} alt="Selected face scan preview" />
-                  <div className="image-scanline" aria-hidden="true" />
-                  <span className="replace-label">CLICK TO REPLACE</span>
-                </>
-              ) : (
-                <div className="drop-copy">
-                  <span className="face-brackets" aria-hidden="true"><i /><i /><i /><i /></span>
-                  <strong>DRAG IMAGE HERE</strong>
-                  <small>OR CLICK TO BROWSE</small>
-                  <span>JPG · PNG · WEBP / MAX 15 MB</span>
-                </div>
-              )}
-            </div>
-
-            {file && (
-              <div className="file-row">
-                <span>{file.name}</span>
-                <span>{(file.size / 1_000_000).toFixed(2)} MB</span>
-              </div>
-            )}
-
-            <fieldset className="chain-picker">
-              <legend>CHAIN TARGET</legend>
-              <button type="button" className={chain === "local" ? "selected" : ""} onClick={() => setChain("local")}>
-                <span>LOCAL ETHEREUM</span><small>FAST · NO GAS</small>
-              </button>
-              <button type="button" className={chain === "sepolia" ? "selected" : ""} onClick={() => setChain("sepolia")}>
-                <span>SEPOLIA</span><small>PUBLIC · TESTNET</small>
-              </button>
-            </fieldset>
-
-            <label className="consent-row">
-              <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
-              <span>I confirm I have consent to search this face and understand public URLs may be anchored on-chain.</span>
-            </label>
-
-            <button className="run-button" disabled={!file || !consent || running} type="submit">
-              <span>{running ? "TRACE IN PROGRESS" : "RUN FACECHAIN"}</span>
-              <b>{running ? "•••" : "↗"}</b>
-            </button>
-            {chain === "sepolia" && <p className="chain-note">Requires a funded test wallet in the local environment.</p>}
-            {error && <div className="error-box" role="alert">{error}</div>}
-          </form>
+          <div className="operation-state" role="status"><span className="operation-message">{current?.message ?? "Waiting for this operation."}</span>{current && <span>{current.state === "running" ? "IN PROGRESS" : `THIS STEP: ${duration(current.duration_ms)}`}</span>}</div>
+          {error && <p className="error-box" role="alert">{error}</p>}
         </div>
       </section>
 
-      <section className="process-section" aria-label="Verification pipeline">
-        <div className="ticker" aria-hidden="true">
-          <div>NO HARDCODED RESULTS ✦ NO FACE EMBEDDINGS ON-CHAIN ✦ VERIFY EVERY BYTE ✦&nbsp;</div>
-          <div>NO HARDCODED RESULTS ✦ NO FACE EMBEDDINGS ON-CHAIN ✦ VERIFY EVERY BYTE ✦&nbsp;</div>
-        </div>
-        <div className="shell process-inner">
-          <div className="section-heading">
-            <p>INSIDE THE RUN</p>
-            <h2>FIVE MOVES.<br />ONE PROOF.</h2>
-          </div>
-          <ol className="stage-list">
-            {STAGES.map(([number, title, detail], index) => {
-              const complete = stage > index;
-              const active = stage === index;
-              return (
-                <li key={number} className={`${complete ? "complete" : ""} ${active ? "active" : ""}`}>
-                  <span className="stage-number">{complete ? "✓" : number}</span>
-                  <div><strong>{title}</strong><small>{detail}</small></div>
-                  <i aria-hidden="true" />
-                </li>
-              );
-            })}
-          </ol>
-        </div>
+      <section className="telemetry shell">
+        <div className="feed-panel"><div className="live-heading"><span>02 / REAL EVENT FEED</span><span>BACKEND TIMINGS</span></div><div className="event-log" role="log" aria-live="polite" aria-relevant="additions">{events.length ? events.map((event, index) => <div className={`event ${event.state}`} key={`${event.id}-${index}`}><time>{event.elapsed_ms === undefined ? "—" : `+${(event.elapsed_ms / 1000).toFixed(3)}s`}</time><b>{event.stage}</b><span>{event.message}</span><small>{event.state}</small></div>) : <p className="feed-empty">Real pipeline events appear here as the backend produces them.</p>}</div></div>
+        <aside className="receipt-panel social-receipt"><span className="kicker">03 / DISCOVERY OUTPUT</span><h2>{result ? "MATCH\nVERIFIED." : "PROFILES\nPENDING."}</h2>
+          {shownIdentity && <div className="identity-summary"><span>RESOLVED IDENTITY</span><b>{shownIdentity.name}</b><small>{shownIdentity.kgmid || "VISUAL CONSENSUS · NO KGMID"}</small></div>}
+          <div className="social-list">{shownProfiles.length ? shownProfiles.map((profile) => <a key={`${profile.platform}-${profile.handle}`} href={profile.profile_url} target="_blank" rel="noreferrer"><span>{profile.platform.slice(0, 2).toUpperCase()}</span><div><b>{profile.handle}</b><small>{confidence(profile.confidence)}</small></div><i>↗</i></a>) : <p>No evidence-backed social handles have been returned yet.</p>}</div>
+          {result && <div className="final-match"><span>{result.source_platform}</span><b>{(result.cosine_similarity * 100).toFixed(1)}% FACE MATCH</b><a href={result.source_url} target="_blank" rel="noreferrer">OPEN MATCHED SOURCE ↗</a></div>}
+          {receipt && <div className="receipt-summary"><span>{receipt.backend.toUpperCase()} · BLOCK #{receipt.block_number}</span><code>{receipt.transaction_hash}</code>{receipt.explorer_url && <a href={receipt.explorer_url} target="_blank" rel="noreferrer">VIEW ON ETHERSCAN ↗</a>}</div>}
+          <p className="fine">Profile labels show their evidence source. A face similarity score and third-party metadata are supporting evidence, not proof of account control.</p>
+        </aside>
       </section>
-
-      {result && (
-        <section id="proof" className="result-section" aria-labelledby="proof-title">
-          <div className="shell">
-            <div className="verified-banner">
-              <span className="verified-seal">✓</span>
-              <div><p>END-TO-END CHECK COMPLETE</p><h2 id="proof-title">PROOF, NOT PROMISES.</h2></div>
-              <span className="run-id">RUN / {result.run_id}</span>
-            </div>
-
-            <div className="result-grid">
-              <article className="result-card match-card">
-                <div className="result-label"><span>01</span> MATCHED CONTENT</div>
-                <div className="platform-line">
-                  <span>{result.source_platform}</span>
-                  <b>{(result.cosine_similarity * 100).toFixed(1)}% FACE MATCH</b>
-                </div>
-                <h3>{result.source_title}</h3>
-                <a href={result.source_url} target="_blank" rel="noreferrer">OPEN ORIGINAL POST ↗</a>
-                <div className="hash-box"><span>CONTENT SHA-256</span><code>{compactHash(result.content_sha256)}</code>
-                  <button onClick={() => copyValue("content", result.content_sha256)}>{copied === "content" ? "COPIED" : "COPY"}</button>
-                </div>
-              </article>
-
-              <article className="result-card identity-card">
-                <div className="result-label"><span>02</span> RESOLVED IDENTITY</div>
-                <h3>{result.identity?.name ?? "NO CANONICAL ENTITY"}</h3>
-                <p className="identity-source">
-                  {result.identity?.kgmid ? `GOOGLE ENTITY ${result.identity.kgmid}` : "VISUAL CONSENSUS · NO KGMID"}
-                </p>
-                <div className="profile-list">
-                  {result.social_profiles.length ? result.social_profiles.map((profile) => (
-                    <a key={`${profile.platform}-${profile.handle}`} href={profile.profile_url} target="_blank" rel="noreferrer">
-                      <span className="platform-icon">{profile.platform.slice(0, 2).toUpperCase()}</span>
-                      <div><b>{profile.handle}</b><small>{confidenceLabel(profile.confidence)}</small></div>
-                      <i>↗</i>
-                    </a>
-                  )) : <p className="empty-profiles">No profile passed the safe association rules.</p>}
-                </div>
-              </article>
-
-              <article className="result-card chain-card">
-                <div className="result-label"><span>03</span> BLOCKCHAIN RECEIPT</div>
-                <div className="chain-status"><i /> VERIFIED ON {result.blockchain.backend.toUpperCase()}</div>
-                <dl>
-                  <div><dt>BLOCK</dt><dd>#{result.blockchain.block_number}</dd></div>
-                  <div><dt>CHAIN ID</dt><dd>{result.blockchain.chain_id}</dd></div>
-                  <div><dt>TRANSACTION</dt><dd><code>{compactHash(result.blockchain.transaction_hash, 14, 12)}</code>
-                    <button onClick={() => copyValue("tx", result.blockchain.transaction_hash)}>{copied === "tx" ? "COPIED" : "COPY"}</button></dd></div>
-                </dl>
-                {result.blockchain.explorer_url && <a className="explorer-link" href={result.blockchain.explorer_url} target="_blank" rel="noreferrer">VIEW ON ETHERSCAN ↗</a>}
-              </article>
-
-              <article className="result-card evidence-card">
-                <div className="result-label"><span>04</span> EVIDENCE BUNDLE</div>
-                <p>Search response, selected image bytes, canonical metadata, receipt, and read-back verification are preserved locally.</p>
-                <code>{result.evidence_path}</code>
-                <div className="privacy-row"><span>IMAGE ON-CHAIN</span><b>NO</b><span>EMBEDDING STORED</span><b>NO</b></div>
-              </article>
-            </div>
-            <button className="again-button" onClick={reset}>RUN ANOTHER TRACE <span>↗</span></button>
-          </div>
-        </section>
-      )}
-
-      <footer>
-        <div className="shell footer-inner">
-          <div><span className="mark">FC</span><b>FACECHAIN</b></div>
-          <p>BUILT FOR HH GOA 2026 · TASK 03</p>
-          <p>CONSENT FIRST. VERIFY ALWAYS.</p>
-        </div>
-      </footer>
+      <footer><div className="shell footer-inner"><b>FC / FACECHAIN LIVE</b><span>HH GOA · WATCH THE ARCHITECTURE WORK.</span><span>FACE → SEARCH → MATCH → PROOF</span></div></footer>
     </main>
   );
+}
+
+function CandidateGallery({ candidates }: { candidates: Candidate[] }) {
+  return <div className="candidate-gallery">{candidates.slice(0, 8).map((candidate) => <a key={candidate.source_url} href={candidate.source_url} target="_blank" rel="noreferrer"><Picture src={candidate.thumbnail_url || candidate.image_url} alt={candidate.title} /><span>{candidate.exact_match ? "EXACT" : `#${candidate.rank}`} · {candidate.source}</span></a>)}</div>;
+}
+
+function ProfileStage({ identity, profiles }: { identity?: { name: string; kgmid: string; source: string } | null; profiles: SocialProfile[] }) {
+  return <div className="profile-stage"><p>RESOLVED ENTITY</p><h3>{identity?.name ?? "NO CANONICAL ENTITY"}</h3><span>{identity?.kgmid || "NO KNOWLEDGE GRAPH ID"}</span><div>{profiles.map((profile) => <a key={profile.profile_url} href={profile.profile_url} target="_blank" rel="noreferrer"><b>{profile.platform}</b><span>{profile.handle}</span><small>{confidence(profile.confidence)}</small></a>)}</div></div>;
+}
+
+function MatchStage({ data }: { data: FeedData["match"] | FeedData }) {
+  const score = data?.cosine_similarity;
+  const candidate = "candidate" in data! ? data.candidate : data as Candidate;
+  return <div className="match-stage">{data?.preview && <Picture src={data.preview} alt="Candidate image downloaded and processed by the backend" />}<div className="match-readout"><span>{candidate?.source ?? "CANDIDATE"}</span><b>{score === undefined ? "DOWNLOADING" : `${(score * 100).toFixed(1)}%`}</b><small>SFACE COSINE SIMILARITY</small></div>{score !== undefined && <div className="score-track"><i style={{ width: `${Math.max(0, Math.min(score, 1)) * 100}%` }} /></div>}</div>;
+}
+
+function ProofStage({ record, receipt, checks }: { record: Record<string, string>; receipt?: Blockchain; checks?: Record<string, boolean> }) {
+  return <div className="proof-stage"><p>CONTENT SHA-256</p><code>{record.content_sha256}</code><p>METADATA SHA-256</p><code>{record.metadata_sha256}</code>{receipt && <><p>TRANSACTION / BLOCK {receipt.block_number}</p><code>{receipt.transaction_hash}</code></>}{checks && <div className="check-row">{Object.entries(checks).map(([key, value]) => <span key={key}>{value ? "✓" : "×"} {key.replaceAll("_", " ")}</span>)}</div>}</div>;
+}
+
+function Picture({ src, alt }: { src: string; alt: string }) {
+  // Search result and data URLs must bypass the deployment image proxy.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt={alt} />;
 }

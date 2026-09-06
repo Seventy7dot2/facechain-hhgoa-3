@@ -31,10 +31,10 @@ test("server-renders the FaceChain product shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>FaceChain — Find it\. Prove it\.<\/title>/i);
-  assert.match(html, /FIND THE FACE/);
+  assert.match(html, /<title>FaceChain Live — See the search\. Prove the match\.<\/title>/i);
+  assert.match(html, /SEE THE SEARCH/);
   assert.match(html, /RUN FACECHAIN/);
-  assert.match(html, /FIVE MOVES/);
+  assert.match(html, /REAL EVENT FEED/);
   assert.match(html, /HH GOA · TASK 03/);
 });
 

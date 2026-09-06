@@ -23,9 +23,9 @@ export async function generateMetadata(): Promise<Metadata> {
     requestHeaders.get("x-forwarded-proto") ??
     (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "FaceChain — Find it. Prove it.";
+  const title = "FaceChain Live — See the search. Prove the match.";
   const description =
-    "Face discovery, genuine social search, and tamper-evident Ethereum verification for HH Goa Task 03.";
+    "Watch YuNet, SFace, Google Lens, social-profile resolution, and Ethereum verification unfold live.";
 
   return {
     metadataBase: new URL(origin),
@@ -36,14 +36,12 @@ export async function generateMetadata(): Promise<Metadata> {
       description,
       type: "website",
       url: origin,
-      images: [
-        {
-          url: `${origin}/og.png`,
-          width: 1200,
-          height: 630,
-          alt: "FaceChain — Find the face. Prove the find.",
-        },
-      ],
+      images: [{
+        url: `${origin}/og.png`,
+        width: 1200,
+        height: 630,
+        alt: "FaceChain — Find the face. Prove the find.",
+      }],
     },
     twitter: {
       card: "summary_large_image",

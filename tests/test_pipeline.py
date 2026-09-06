@@ -105,7 +105,10 @@ def test_pipeline_selects_confirmed_face_and_keeps_biometrics_off_chain(
     image = tmp_path / "input.jpg"
     image.write_bytes(b"input-image")
 
-    evidence_path, bundle = pipeline.run_pipeline(image, artifact_root=tmp_path / "artifacts")
+    events = []
+    evidence_path, bundle = pipeline.run_pipeline(
+        image, artifact_root=tmp_path / "artifacts", progress=events.append
+    )
 
     assert evidence_path.is_file()
     assert bundle["match"]["source_url"] == "https://instagram.com/p/confirmed"
@@ -122,3 +125,23 @@ def test_pipeline_selects_confirmed_face_and_keeps_biometrics_off_chain(
         "observed_at",
         "metadata_sha256",
     }
+    completed_stages = [event["stage"] for event in events if event["state"] == "completed"]
+    assert completed_stages == [
+        "input",
+        "crop",
+        "search",
+        "profiles",
+        "confirm",
+        "evidence",
+        "anchor",
+        "verify",
+    ]
+    crop_event = next(
+        event for event in events if event["stage"] == "crop" and event["state"] == "completed"
+    )
+    input_event = next(
+        event for event in events if event["stage"] == "input" and event["state"] == "completed"
+    )
+    assert input_event["data"]["preview"].startswith("data:image/jpeg;base64,")
+    assert crop_event["data"]["preview"].startswith("data:image/jpeg;base64,")
+    assert events[-1]["data"]["checks"]["on_chain_record_matches"] is True
