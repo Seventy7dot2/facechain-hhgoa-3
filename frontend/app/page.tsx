@@ -103,6 +103,7 @@ function confidence(value: SocialProfile["confidence"]) {
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const finalOutputRef = useRef<HTMLElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [original, setOriginal] = useState("");
   const [events, setEvents] = useState<Feed[]>([]);
@@ -133,6 +134,14 @@ export default function Home() {
   useEffect(() => () => {
     if (original) URL.revokeObjectURL(original);
   }, [original]);
+
+  useEffect(() => {
+    if (!result) return;
+    const timer = window.setTimeout(() => {
+      finalOutputRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [result]);
 
   function chooseFile(next?: File) {
     if (!next || running) return;
@@ -224,6 +233,16 @@ export default function Home() {
 
   const shownProfiles = result?.social_profiles ?? profileEvent?.profiles ?? [];
   const shownIdentity = result?.identity ?? profileEvent?.identity;
+  const verifiedSightings = confirmationEvents
+    .filter((event) => event.data.accepted === true && event.data.candidate)
+    .map((event) => ({
+      candidate: event.data.candidate!,
+      score: event.data.cosine_similarity!,
+      preview: event.data.preview,
+    }))
+    .filter((sighting, index, all) => all.findIndex(
+      (item) => item.candidate.source_url === sighting.candidate.source_url,
+    ) === index);
 
   return (
     <main className="lab">
@@ -285,7 +304,7 @@ export default function Home() {
 
       <section className="telemetry shell">
         <div className="feed-panel"><div className="live-heading"><span>02 / REAL EVENT FEED</span><span>BACKEND TIMINGS</span></div><div className="event-log" role="log" aria-live="polite" aria-relevant="additions">{events.length ? events.map((event, index) => <div className={`event ${event.state}`} key={`${event.id}-${index}`}><time>{event.elapsed_ms === undefined ? "—" : `+${(event.elapsed_ms / 1000).toFixed(3)}s`}</time><b>{event.stage}</b><span>{event.message}</span><small>{event.state}</small></div>) : <p className="feed-empty">Real pipeline events appear here as the backend produces them.</p>}</div></div>
-        <aside className="receipt-panel social-receipt"><span className="kicker">03 / DISCOVERY OUTPUT</span><h2>{result ? "MATCH\nVERIFIED." : "PROFILES\nPENDING."}</h2>
+        <aside className="receipt-panel social-receipt"><span className="kicker">03 / LIVE DISCOVERY SIGNALS</span><h2>{result ? "RESULTS\nREADY ↓" : "PROFILES\nPENDING."}</h2>
           {shownIdentity && <div className="identity-summary"><span>RESOLVED IDENTITY</span><b>{shownIdentity.name}</b><small>{shownIdentity.kgmid || "VISUAL CONSENSUS · NO KGMID"}</small></div>}
           <div className="social-list">{shownProfiles.length ? shownProfiles.map((profile) => <a key={`${profile.platform}-${profile.handle}`} href={profile.profile_url} target="_blank" rel="noreferrer"><span>{profile.platform.slice(0, 2).toUpperCase()}</span><div><b>{profile.handle}</b><small>{confidence(profile.confidence)}</small></div><i>↗</i></a>) : <p>No evidence-backed social handles have been returned yet.</p>}</div>
           {result && <div className="final-match"><span>{result.source_platform}</span><b>{(result.cosine_similarity * 100).toFixed(1)}% FACE MATCH</b><a href={result.source_url} target="_blank" rel="noreferrer">OPEN MATCHED SOURCE ↗</a></div>}
@@ -293,6 +312,34 @@ export default function Home() {
           <p className="fine">Profile labels show their evidence source. A face similarity score and third-party metadata are supporting evidence, not proof of account control.</p>
         </aside>
       </section>
+
+      {result && <section className="final-output" id="discovery-results" ref={finalOutputRef} aria-labelledby="final-output-title">
+        <div className="shell">
+          <div className="final-output-status"><span>✓</span><div><p>FINAL DISCOVERY OUTPUT</p><b>SEARCH COMPLETE · {shownProfiles.length} LINKED PROFILE{shownProfiles.length === 1 ? "" : "S"} · {verifiedSightings.length} FACE-CONFIRMED RESULT{verifiedSightings.length === 1 ? "" : "S"}</b></div><small>RUN {result.run_id}</small></div>
+          <div className="final-output-heading"><div><p className="eyebrow">THE OUTPUT YOU CAME FOR</p><h2 id="final-output-title">LINKED SOCIAL<br /><em>PROFILES.</em></h2></div><div className="final-identity"><span>RESOLVED PERSON</span><b>{shownIdentity?.name ?? result.source_title}</b><small>{shownIdentity?.kgmid || "VISUAL IDENTITY CONSENSUS"}</small></div></div>
+
+          <article className="hero-match-card">
+            <div className="hero-match-image">{confirmedMatch?.preview ? <Picture src={confirmedMatch.preview} alt={`Face-confirmed result from ${result.source_platform}`} /> : <div className="platform-fallback">{platformCode(result.source_platform)}</div>}<span>BEST FACE MATCH · {(result.cosine_similarity * 100).toFixed(1)}%</span></div>
+            <div className="hero-match-copy"><div className="result-type"><b>{result.source_platform}</b><span>FACE-CONFIRMED {destinationKind(result.source_url)}</span></div><h3>{result.source_title}</h3><p>This public destination contains the strongest locally confirmed face match found by the discovery pipeline.</p><a className="open-result" href={result.source_url} target="_blank" rel="noreferrer">OPEN {destinationKind(result.source_url)} <span>↗</span></a><small>Similarity {(result.cosine_similarity * 100).toFixed(2)}% · SFace local comparison</small></div>
+          </article>
+
+          <div className="final-discovery-grid">
+            <section className="linked-results" aria-labelledby="linked-accounts-title"><div className="final-panel-head"><span>01</span><div><p>LINKED ACCOUNTS</p><h3 id="linked-accounts-title">SOCIAL PROFILES</h3></div><b>{String(shownProfiles.length).padStart(2, "0")}</b></div>
+              {shownProfiles.length ? <div className="profile-output-list">{shownProfiles.map((profile) => {
+                const preview = profileImage(profile, searchEvent?.candidates ?? [], verifiedSightings);
+                return <a key={profile.profile_url} href={profile.profile_url} target="_blank" rel="noreferrer" className="profile-output-card"><div className="profile-output-image">{preview ? <Picture src={preview} alt={`${profile.platform} result for ${profile.handle}`} /> : <span>{platformCode(profile.platform)}</span>}<i>{platformCode(profile.platform)}</i></div><div><span>{profile.platform}</span><b>@{profile.handle.replace(/^@/, "")}</b><small>{confidence(profile.confidence)}</small></div><strong>OPEN ↗</strong></a>;
+              })}</div> : <div className="no-profile-output"><b>NO ADDITIONAL ACCOUNT HANDLES</b><p>The face-confirmed source above is still available as the final discovery result.</p></div>}
+            </section>
+
+            <section className="sighting-results" aria-labelledby="confirmed-sightings-title"><div className="final-panel-head"><span>02</span><div><p>VERIFIED DESTINATIONS</p><h3 id="confirmed-sightings-title">PROFILES &amp; POSTS</h3></div><b>{String(verifiedSightings.length).padStart(2, "0")}</b></div>
+              <div className="sighting-output-list">{verifiedSightings.map(({ candidate, score, preview }, index) => <a key={candidate.source_url} href={candidate.source_url} target="_blank" rel="noreferrer" className={candidate.source_url === result.source_url ? "best" : ""}><div className="sighting-thumb">{preview ? <Picture src={preview} alt={`Face-confirmed ${candidate.source} result`} /> : <span>{platformCode(candidate.source)}</span>}<i>{String(index + 1).padStart(2, "0")}</i></div><div><span>{candidate.source} · {destinationKind(candidate.source_url)}</span><b>{candidate.title}</b><small>{(score * 100).toFixed(1)}% FACE MATCH</small></div><strong>{candidate.source_url === result.source_url ? "BEST MATCH" : "OPEN ↗"}</strong></a>)}</div>
+            </section>
+          </div>
+
+          <div className="final-proof-line"><span>ON-CHAIN EVIDENCE</span><code>{result.blockchain.transaction_hash}</code>{result.blockchain.explorer_url ? <a href={result.blockchain.explorer_url} target="_blank" rel="noreferrer">VIEW RECEIPT ↗</a> : <b>LOCAL BLOCK #{result.blockchain.block_number}</b>}</div>
+          <p className="final-caveat">Face similarity and public metadata support the association; they do not prove account ownership. Open each destination to review the evidence directly.</p>
+        </div>
+      </section>}
       <footer><div className="shell footer-inner"><b>FC / FACECHAIN LIVE</b><span>HH GOA · WATCH THE ARCHITECTURE WORK.</span><span>FACE → SEARCH → MATCH → PROOF</span></div></footer>
     </main>
   );
@@ -320,4 +367,40 @@ function Picture({ src, alt }: { src: string; alt: string }) {
   // Search result and data URLs must bypass the deployment image proxy.
   // eslint-disable-next-line @next/next/no-img-element
   return <img src={src} alt={alt} />;
+}
+
+function platformCode(platform: string) {
+  const codes: Record<string, string> = {
+    instagram: "IG",
+    x: "X",
+    twitter: "X",
+    facebook: "FB",
+    linkedin: "IN",
+    github: "GH",
+    youtube: "YT",
+    tiktok: "TK",
+    threads: "TH",
+  };
+  return codes[platform.toLowerCase()] ?? platform.slice(0, 2).toUpperCase();
+}
+
+function destinationKind(url: string) {
+  const path = url.toLowerCase();
+  return ["/status/", "/posts/", "/post/", "/p/", "/reel/", "/watch?", "youtu.be/", "/photo"].some((marker) => path.includes(marker))
+    ? "POST / MEDIA"
+    : "PROFILE";
+}
+
+function profileImage(
+  profile: SocialProfile,
+  candidates: Candidate[],
+  sightings: Array<{ candidate: Candidate; score: number; preview?: string }>,
+) {
+  const normalizedProfile = profile.profile_url.replace(/[?#].*$/, "").replace(/\/$/, "").toLowerCase();
+  const confirmed = sightings.find(({ candidate }) => candidate.source_url.replace(/[?#].*$/, "").replace(/\/$/, "").toLowerCase() === normalizedProfile);
+  if (confirmed?.preview) return confirmed.preview;
+  const exact = candidates.find((candidate) => candidate.source_url.replace(/[?#].*$/, "").replace(/\/$/, "").toLowerCase() === normalizedProfile);
+  const platformMatch = candidates.find((candidate) => candidate.source.toLowerCase() === profile.platform.toLowerCase());
+  const candidate = exact ?? platformMatch;
+  return candidate?.thumbnail_url || candidate?.image_url;
 }

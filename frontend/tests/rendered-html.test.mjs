@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const templateRoot = new URL("../", import.meta.url);
@@ -41,4 +41,13 @@ test("server-renders the FaceChain product shell", async () => {
 test("removes the disposable starter preview", async () => {
   await assert.rejects(access(new URL("app/_sites-preview", templateRoot)));
   await assert.rejects(access(new URL("public/favicon.svg", templateRoot)));
+});
+
+test("makes linked profiles and confirmed posts the dedicated final output", async () => {
+  const source = await readFile(new URL("app/page.tsx", templateRoot), "utf8");
+  assert.match(source, /FINAL DISCOVERY OUTPUT/);
+  assert.match(source, /LINKED SOCIAL/);
+  assert.match(source, /SOCIAL PROFILES/);
+  assert.match(source, /PROFILES &amp; POSTS/);
+  assert.match(source, /scrollIntoView/);
 });
