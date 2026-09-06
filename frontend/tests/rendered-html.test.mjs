@@ -51,3 +51,12 @@ test("makes linked profiles and confirmed posts the dedicated final output", asy
   assert.match(source, /PROFILES &amp; POSTS/);
   assert.match(source, /scrollIntoView/);
 });
+
+test("keeps the real event feed bounded and following the latest event", async () => {
+  const page = await readFile(new URL("app/page.tsx", templateRoot), "utf8");
+  const styles = await readFile(new URL("app/globals.css", templateRoot), "utf8");
+  assert.match(page, /facechain:\/\/pipeline\/events/);
+  assert.match(page, /JUMP TO LATEST/);
+  assert.match(page, /eventLogRef\.current/);
+  assert.match(styles, /\.event-log\s*\{[^}]*height:\s*450px[^}]*overflow-y:\s*auto/s);
+});

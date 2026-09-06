@@ -104,6 +104,7 @@ export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const finalOutputRef = useRef<HTMLElement>(null);
+  const eventLogRef = useRef<HTMLDivElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [original, setOriginal] = useState("");
   const [events, setEvents] = useState<Feed[]>([]);
@@ -116,6 +117,7 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [online, setOnline] = useState<boolean | null>(null);
   const [result, setResult] = useState<PipelineResult | null>(null);
+  const [feedFollowing, setFeedFollowing] = useState(true);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -143,6 +145,29 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [result]);
 
+  useEffect(() => {
+    if (!feedFollowing) return;
+    const frame = window.requestAnimationFrame(() => {
+      const log = eventLogRef.current;
+      if (log) log.scrollTop = log.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [events, feedFollowing]);
+
+  function updateFeedFollow() {
+    const log = eventLogRef.current;
+    if (!log) return;
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 36;
+    setFeedFollowing(atBottom);
+  }
+
+  function jumpToLatest() {
+    setFeedFollowing(true);
+    window.requestAnimationFrame(() => {
+      eventLogRef.current?.scrollTo({ top: eventLogRef.current.scrollHeight, behavior: "smooth" });
+    });
+  }
+
   function chooseFile(next?: File) {
     if (!next || running) return;
     if (!ACCEPTED_TYPES.includes(next.type) || !next.size || next.size > 15_000_000) {
@@ -157,6 +182,7 @@ export default function Home() {
     setError("");
     setSelected("input");
     setFollow(true);
+    setFeedFollowing(true);
   }
 
   async function runPipeline() {
@@ -166,6 +192,7 @@ export default function Home() {
     setResult(null);
     setError("");
     setFollow(true);
+    setFeedFollowing(true);
     const controller = new AbortController();
     abortRef.current = controller;
     const form = new FormData();
@@ -303,7 +330,7 @@ export default function Home() {
       </section>
 
       <section className="telemetry shell">
-        <div className="feed-panel"><div className="live-heading"><span>02 / REAL EVENT FEED</span><span>BACKEND TIMINGS</span></div><div className="event-log" role="log" aria-live="polite" aria-relevant="additions">{events.length ? events.map((event, index) => <div className={`event ${event.state}`} key={`${event.id}-${index}`}><time>{event.elapsed_ms === undefined ? "—" : `+${(event.elapsed_ms / 1000).toFixed(3)}s`}</time><b>{event.stage}</b><span>{event.message}</span><small>{event.state}</small></div>) : <p className="feed-empty">Real pipeline events appear here as the backend produces them.</p>}</div></div>
+        <div className="feed-panel"><div className="live-heading"><span>02 / REAL EVENT FEED</span><span>BACKEND TIMINGS</span></div><div className="terminal-bar"><div aria-hidden="true"><i /><i /><i /></div><span>facechain://pipeline/events</span><button type="button" aria-pressed={feedFollowing} onClick={jumpToLatest}>{feedFollowing ? "● FOLLOWING LATEST" : "↓ JUMP TO LATEST"}</button></div><div ref={eventLogRef} className="event-log" role="log" aria-live="polite" aria-relevant="additions" tabIndex={0} onScroll={updateFeedFollow}>{events.length ? events.map((event, index) => <div className={`event ${event.state} ${index === events.length - 1 ? "latest" : ""}`} key={`${event.id}-${index}`}><time>{event.elapsed_ms === undefined ? "—" : `+${(event.elapsed_ms / 1000).toFixed(3)}s`}</time><b>{event.stage}</b><span>{event.message}</span><small>{event.state}</small></div>) : <p className="feed-empty"><span>$</span> Waiting for backend events<span className="terminal-cursor" aria-hidden="true">▋</span></p>}</div></div>
         <aside className="receipt-panel social-receipt"><span className="kicker">03 / LIVE DISCOVERY SIGNALS</span><h2>{result ? "RESULTS\nREADY ↓" : "PROFILES\nPENDING."}</h2>
           {shownIdentity && <div className="identity-summary"><span>RESOLVED IDENTITY</span><b>{shownIdentity.name}</b><small>{shownIdentity.kgmid || "VISUAL CONSENSUS · NO KGMID"}</small></div>}
           <div className="social-list">{shownProfiles.length ? shownProfiles.map((profile) => <a key={`${profile.platform}-${profile.handle}`} href={profile.profile_url} target="_blank" rel="noreferrer"><span>{profile.platform.slice(0, 2).toUpperCase()}</span><div><b>{profile.handle}</b><small>{confidence(profile.confidence)}</small></div><i>↗</i></a>) : <p>No evidence-backed social handles have been returned yet.</p>}</div>
