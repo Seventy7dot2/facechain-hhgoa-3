@@ -32,8 +32,8 @@ Requirements:
 Install the project:
 
 ```bash
-git clone https://github.com/Seventy7dot2/hhgoa-task-3.git
-cd hhgoa-task-3
+git clone https://github.com/Seventy7dot2/facechain-hhgoa-3.git
+cd facechain-hhgoa-3
 uv sync --extra dev
 cp .env.example .env
 ```
