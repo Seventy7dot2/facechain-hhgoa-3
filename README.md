@@ -1,169 +1,165 @@
-# FaceChain Evidence
+# FaceChain Evidence — HH Goa 2026 Task 3
 
-FaceChain Evidence is a command-line pipeline for the HH Goa 2026 face identification and
-blockchain verification challenge. It detects and encodes a face, performs a genuine Google Lens
-search, locally confirms that a face in the discovered social-media image matches the input, and
-resolves associated social profiles through Google's Knowledge Graph before anchoring a compact
-evidence record on Ethereum.
+FaceChain Evidence is an end-to-end solution for **HH Goa Task 3: Face ID + Blockchain
+Verification**.
+
+It takes a face image, finds real matching social-media content through Google Lens, confirms the
+face match locally, and writes a tamper-evident fingerprint to Ethereum. No search result is
+hardcoded.
+
+## Task 3 pipeline
 
 ```text
-input image
-    -> YuNet detection + SFace encoding
-    -> SerpApi local-image upload + live Google Lens search
-    -> social-domain filtering + SFace candidate confirmation
-    -> Lens entity + Knowledge Graph social-profile lookup
-    -> canonical evidence hashes
-    -> Ethereum transaction
-    -> independent read-back and verification
+Input photo
+  → YuNet face detection
+  → SFace face encoding
+  → SerpApi Google Lens reverse-image search
+  → Local SFace confirmation of social results
+  → Social profile discovery
+  → SHA-256 evidence record
+  → Ethereum transaction
+  → On-chain read-back verification
 ```
-
-The repository includes a responsive HH Goa-themed web interface as well as the CLI. Raw face
-embeddings are held only in memory. Social images are never stored on-chain.
-
-## What goes on-chain
-
-Each successful run writes a versioned JSON envelope into an Ethereum transaction's calldata:
-
-- SHA-256 of the exact discovered image bytes
-- source social-post URL
-- UTC observation timestamp
-- SHA-256 of canonical discovery metadata
-
-The metadata includes the search provider/result ID, title, source, image URL, search rank, model
-names, face-similarity score, Lens entity, and associated social profiles. Knowledge Graph profiles
-are marked `knowledge_graph`; profile-shaped organic results are marked `search_result`, and direct
-profile URLs returned by Lens are marked `lens_result`, so the confidence levels are never
-conflated. If Lens omits an entity/KGMID, the pipeline infers a display name only when at least two
-high-confidence result titles agree and retains only profile pages directly associated by Lens. It
-deliberately skips a generic name-based social search, which can return accounts belonging to other
-people with the same name. The generated evidence bundle contains the transaction hash and block
-number. Verification fetches the transaction, decodes its calldata, re-hashes the off-chain image
-and metadata, and checks that all values agree.
 
 ## Quick start
 
-Prerequisites: Python 3.11–3.13, [`uv`](https://docs.astral.sh/uv/), and a SerpApi key. SerpApi is
-used because its Google Lens API accepts a local JPG/PNG/WebP upload and returns the live result set;
-no result URL is hardcoded.
+Requirements:
+
+- Python 3.11–3.13
+- [uv](https://docs.astral.sh/uv/)
+- A [SerpApi](https://serpapi.com/) API key
+
+Install the project:
 
 ```bash
+git clone https://github.com/Seventy7dot2/hhgoa-task-3.git
+cd hhgoa-task-3
 uv sync --extra dev
 cp .env.example .env
-# Add SERPAPI_KEY to .env; never commit this file.
-uv run facechain download-models
-uv run facechain inspect-face /path/to/one-face.jpg
-uv run facechain run /path/to/one-face.jpg
 ```
 
-### Web interface
+Add your key to `.env`:
 
-Start the API and frontend in separate terminals:
+```dotenv
+SERPAPI_KEY=your_serpapi_key
+```
+
+Download the checksum-verified face models once:
 
 ```bash
-# Terminal 1 — API
-uv run facechain serve --host 127.0.0.1 --port 8000
+uv run facechain download-models
+```
 
-# Terminal 2 — frontend
+Run the complete Task 3 pipeline using the included sample:
+
+```bash
+uv run facechain run image.webp
+```
+
+`image.webp` is the sample input provided by the project owner for repository testing. Use other
+face images only with the person's consent.
+
+![Included sample input](image.webp)
+
+## Result
+
+The CLI prints:
+
+- the real matched social profile or post URL;
+- the local face-similarity score;
+- discovered social handles;
+- the content SHA-256 fingerprint;
+- the Ethereum transaction hash and block number; and
+- the saved evidence path.
+
+Complete run evidence is written to `artifacts/<run-id>/evidence.json`. Candidate images and raw
+provider responses remain off-chain.
+
+## Blockchain
+
+The default mode uses a local Ethereum chain through Web3.py's Ethereum tester. It publishes a real
+transaction, reads the transaction data back, and verifies the record before the command succeeds.
+No wallet, faucet, RPC service, or smart contract is required.
+
+For a permanent public proof, add a dedicated Sepolia testnet RPC URL and private key to `.env`:
+
+```dotenv
+SEPOLIA_RPC_URL=https://your-sepolia-rpc.example
+SEPOLIA_PRIVATE_KEY=0x_your_testnet_private_key
+```
+
+Then run:
+
+```bash
+uv run facechain run image.webp --chain sepolia
+uv run facechain verify artifacts/<run-id>/evidence.json
+```
+
+Never use a wallet that controls real assets.
+
+## Optional live frontend
+
+The CLI is the primary Task 3 submission. The repository also includes an HH Goa-themed frontend
+that visualizes every real backend stage and highlights the discovered profiles and posts.
+
+Start it in two terminals:
+
+```bash
+# Terminal 1
+uv run facechain serve
+```
+
+```bash
+# Terminal 2
 cd frontend
 cp .env.example .env.local
 npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`, select a clear JPG, PNG, or WebP image, confirm consent, and run the
-search. The result board shows the matched source, similarity score, profiles supported by the
-search evidence, content hash, and blockchain receipt. For a deployed frontend, set
-`NEXT_PUBLIC_FACECHAIN_API_URL` to the public HTTPS URL of the separately hosted Python API before
-building.
+Open `http://localhost:3000` and run the sample image. The event terminal is driven by backend
+events; it does not simulate progress with frontend timers.
 
-The frontend requests `text/event-stream` from the original `POST /api/runs` endpoint. The same
-endpoint keeps its JSON response for ordinary API clients. Stream events are emitted around the
-real YuNet, SFace, SerpApi/Lens, profile-resolution, candidate-confirmation, hashing, publication,
-and read-back operations; no presentation timer invents progress. A deployed API or reverse proxy
-must keep SSE responses unbuffered and allow enough time for live search and transaction mining.
-
-The default `local` blockchain is Web3.py's in-process Ethereum tester. It mines a real Ethereum
-transaction, returns a transaction and block hash, then reads the record back from the chain and
-re-verifies it before reporting success. Run artifacts are written under `artifacts/<run-id>/` and
-are ignored by Git because they can contain biometric imagery.
-
-### Optional public Sepolia proof
-
-For a persistent public record, fund a dedicated Sepolia test wallet and set:
-
-```dotenv
-SEPOLIA_RPC_URL=https://your-sepolia-rpc.example
-SEPOLIA_PRIVATE_KEY=0x...
-```
-
-Then run and later re-verify the same record:
+## Useful commands
 
 ```bash
-uv run facechain run /path/to/one-face.jpg --chain sepolia
-uv run facechain verify artifacts/<run-id>/evidence.json
-```
+# Confirm that a face can be detected without using SerpApi
+uv run facechain inspect-face image.webp
 
-The evidence JSON includes an Etherscan link. Use a dedicated testnet-only private key; never reuse
-a wallet that controls real assets.
+# Inspect fewer Google Lens candidates
+uv run facechain run image.webp --max-candidates 10
 
-## Output
+# Start the API used by the frontend
+uv run facechain serve --host 127.0.0.1 --port 8000
 
-A successful run saves:
-
-- `evidence.json` — canonical metadata, hashes, chain receipt, and verification result
-- `matched-content.*` — off-chain bytes whose hash was anchored
-- `search-response.json` — sanitized live provider response (no API key)
-- `profile-search-response.json` — sanitized entity/profile lookup evidence
-- `candidate-diagnostics.json` — rejected candidates and reasons
-
-Only sanitized metadata/receipt files should be copied into a public demo folder. Do not commit the
-input image, matched image, face embeddings, `.env`, or the complete `artifacts/` directory.
-
-## Quality checks
-
-```bash
+# Run the automated checks
 uv run ruff check .
-uv run pytest --cov=facechain --cov-report=term-missing
+uv run pytest
 ```
 
-Tests cover deterministic evidence encoding, URL filtering and live-response parsing, candidate
-selection/orchestration, content tampering, and a full publish/read/verify cycle on simulated
-Ethereum. Network calls are mocked in the test suite.
+## What is stored on-chain?
 
-## Blockchain used
+Only a compact evidence record is stored in transaction calldata:
 
-Ethereum is used in both modes:
+- hash of the exact matched image bytes;
+- matched social source URL;
+- observation timestamp; and
+- hash of the canonical discovery metadata.
 
-- **Local default:** `EthereumTesterProvider` + Py-EVM, with pre-funded test accounts and instant
-  mining. This mode is reproducible and requires no wallet, faucet, Docker, or external node.
-- **Optional public mode:** Ethereum Sepolia through any standard JSON-RPC endpoint. Transactions
-  are EIP-1559 signed locally and can be inspected on Etherscan.
+Images and face embeddings are never stored on-chain. Face embeddings remain in memory and are not
+written to the evidence bundle.
 
-A smart contract is deliberately unnecessary: immutable transaction calldata is sufficient for a
-small append-only evidence envelope, reduces deployment complexity and gas, and works identically
-on local Ethereum and Sepolia.
+## Known limitations
 
-## Known limitations and responsible use
+- Results depend on Google Lens indexing, SerpApi availability, and social-platform coverage.
+- SFace similarity is supporting evidence, not proof of identity or account ownership.
+- Similar-looking people can cause false positives; poor or side-profile images can cause false
+  negatives.
+- Some social-media CDNs block or expire image downloads, so those candidates may be skipped.
+- The local Ethereum chain disappears after the process exits; use Sepolia for persistent proof.
+- Public URLs written to Sepolia cannot be removed. Use the system only with informed consent.
 
-- Reverse-image coverage depends on Google Lens indexing, SerpApi availability/quota, and the
-  social platform. A real person may have no indexed result.
-- SFace similarity is evidence of visual similarity, not legal proof of identity. The OpenCV LFW
-  cosine threshold (`0.363`) is used as a baseline and can produce false positives or negatives.
-- The largest detected input face is selected. Use a clear, front-facing, single-person image.
-- Some social CDNs block downloads or expire image URLs. Candidates that cannot be downloaded are
-  recorded and skipped.
-- Hashes verify the exact downloaded bytes. Re-encoded or resized copies will have different hashes
-  even when visually identical.
-- Local-chain state exists only for the process that performs the run; read-back verification is
-  completed before exit. Use Sepolia when later independent verification is required.
-- Public URLs and timestamps are public personal data when placed on a public chain. Run this only
-  with informed consent and do not use it for surveillance, access control, or consequential
-  identity decisions.
-- A Knowledge Graph association is stronger than a generic search result but is still third-party
-  metadata, not proof that an account is currently controlled by the identified person.
+## Responsible use
 
-## Repository submission
-
-This directory is ready to initialize and push as a GitHub repository. Before submission, perform a
-consented live run, copy only sanitized metadata and the transaction receipt into the repository if
-desired, review it for personal information, and add the resulting GitHub URL to the submission.
+This project is a hackathon demonstration, not an identity authority. Do not use it for
+surveillance, access control, employment, credit, policing, or other consequential decisions.

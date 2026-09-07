@@ -8,7 +8,6 @@ htmlcov/
 .DS_Store
 artifacts/
 models/*.onnx
-# Local consented demo input; never publish biometric source images by default.
+# Personal test inputs stay local. image.webp is the repository's explicit sample input.
 image.jpeg
-image.webp
 sumit.jpeg
